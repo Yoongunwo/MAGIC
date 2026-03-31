@@ -6,6 +6,7 @@ import networkx as nx
 import json
 from tqdm import tqdm
 import os
+from utils.save_parser import preprocess_save_dataset
 
 
 class StreamspotDataset(dgl.data.DGLDataset):
@@ -74,6 +75,56 @@ class WgetDataset(dgl.data.DGLDataset):
 
     def __len__(self):
         return len(self.graphs)
+
+
+class SAVEDataset(dgl.data.DGLDataset):
+    """Dataset for SAVE-format syscall log files."""
+
+    def process(self):
+        pass
+
+    def __init__(self, log_path, window_size=50, stride=10, cache_path=None):
+        self.graphs = []
+        self.labels = []
+        graphs, _ = preprocess_save_dataset(log_path, window_size, stride, cache_path)
+        self.graphs = graphs
+        self.labels = [0] * len(graphs)  # all benign
+        super(SAVEDataset, self).__init__(name='save')
+
+    def __getitem__(self, i):
+        return self.graphs[i], self.labels[i]
+
+    def __len__(self):
+        return len(self.graphs)
+
+
+def load_save_dataset(log_path, window_size=50, stride=10, cache_path=None):
+    """
+    Load and preprocess a SAVE-format log file into a batch-level dataset dict
+    compatible with batch_level_train.
+    """
+    dataset = SAVEDataset(log_path, window_size, stride, cache_path)
+
+    node_feature_dim = 0
+    for g, _ in dataset:
+        if g.num_nodes() > 0:
+            node_feature_dim = max(node_feature_dim, g.ndata['type'].max().item())
+    node_feature_dim += 1  # +1 because syscall ids start at 0
+
+    edge_feature_dim = 1   # single edge type (transition)
+
+    full_index = list(range(len(dataset)))
+    train_index = full_index  # all graphs are benign training samples
+
+    print(f'[n_graph, n_node_feat, n_edge_feat]: [{len(dataset)}, {node_feature_dim}, {edge_feature_dim}]')
+
+    return {
+        'dataset': dataset,
+        'train_index': train_index,
+        'full_index': full_index,
+        'n_feat': node_feature_dim,
+        'e_feat': edge_feature_dim,
+    }
 
 
 def load_rawdata(name):
