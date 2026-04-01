@@ -66,6 +66,8 @@ def build_args():
     parser.add_argument('--n_neighbors', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=10,
                         help='Repetitions for AUC averaging (only used with attack logs)')
+    parser.add_argument('--syscall_dim', type=int, default=356,
+                        help='One-hot feature dimension = max syscall number + 1 (kernel 6.8: 356)')
     parser.add_argument('--device', type=int, default=-1)
     parser.add_argument('--pooling', type=str, default='mean')
     parser.add_argument('--num_hidden', type=int, default=64)
@@ -96,6 +98,7 @@ def embed_raw_graphs(model, raw_graphs, n_dim, e_dim, device, pooler):
     embeddings = []
     for g in tqdm(raw_graphs, desc='Embedding attack graphs'):
         from utils.loaddata import transform_graph as tg
+        # n_dim == SYSCALL_DIM(512)이므로 실제 Linux syscall은 모두 범위 내
         g = tg(g, n_dim, e_dim).to(device)
         out = model.embed(g)
         out = pooler(g, out).cpu().numpy()
@@ -180,7 +183,7 @@ def evaluate_benign_only(scores):
 
 def main():
     args = build_args()
-    device = args.device if args.device >= 0 else 'cpu'
+    device = torch.device(f'cuda:{args.device}' if args.device >= 0 else 'cpu')
     set_random_seed(0)
 
     # ── Load benign dataset ────────────────────────────────────────────────
@@ -189,6 +192,7 @@ def main():
         window_size=args.window_size,
         stride=args.stride,
         cache_path=args.benign_cache,
+        syscall_dim=args.syscall_dim,
     )
     graphs = benign_data['dataset']
     n_dim = benign_data['n_feat']
@@ -237,11 +241,11 @@ def main():
         attack_raw_graphs = []
         for path in resolved_attack_files:
             cache = path.replace('.txt', '_cache.pkl')
-            ag, max_sc = preprocess_save_dataset(path, args.window_size, args.stride, cache)
+            ag, max_sc = preprocess_save_dataset(path, args.window_size, args.stride, cache, args.syscall_dim)
             # Expand feature dim if attack logs contain unseen syscall numbers
             if max_sc + 1 > n_dim:
-                print(f'  Warning: attack log has syscall {max_sc} > train max {n_dim - 1}. '
-                      f'Feature dim kept at {n_dim} (unseen syscalls will be clipped).')
+                print(f'  Warning: syscall {max_sc} exceeds SYSCALL_DIM {n_dim}. '
+                      f'Consider raising SYSCALL_DIM in save_parser.py.')
             attack_raw_graphs.extend(ag)
         print(f'Attack graphs: {len(attack_raw_graphs)}')
         x_attack = embed_raw_graphs(model, attack_raw_graphs, n_dim, e_dim, device, pooler)

@@ -36,6 +36,8 @@ def build_args():
                         help='Sliding window size for syscall sequences')
     parser.add_argument('--stride', type=int, default=10,
                         help='Stride for sliding window')
+    parser.add_argument('--syscall_dim', type=int, default=356,
+                        help='One-hot feature dimension = max syscall number + 1 (kernel 6.8: 356)')
     # Training
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--max_epoch', type=int, default=20)
@@ -57,7 +59,7 @@ def build_args():
 
 def main():
     args = build_args()
-    device = args.device if args.device >= 0 else 'cpu'
+    device = torch.device(f'cuda:{args.device}' if args.device >= 0 else 'cpu')
     set_random_seed(0)
 
     # ── Load & preprocess dataset ──────────────────────────────────────────
@@ -66,6 +68,7 @@ def main():
         window_size=args.window_size,
         stride=args.stride,
         cache_path=args.cache_path,
+        syscall_dim=args.syscall_dim,
     )
 
     graphs = dataset['dataset']

@@ -6,7 +6,7 @@ import networkx as nx
 import json
 from tqdm import tqdm
 import os
-from utils.save_parser import preprocess_save_dataset
+from utils.save_parser import preprocess_save_dataset, SYSCALL_DIM
 
 
 class StreamspotDataset(dgl.data.DGLDataset):
@@ -83,10 +83,10 @@ class SAVEDataset(dgl.data.DGLDataset):
     def process(self):
         pass
 
-    def __init__(self, log_path, window_size=50, stride=10, cache_path=None):
+    def __init__(self, log_path, window_size=50, stride=10, cache_path=None, syscall_dim=SYSCALL_DIM):
         self.graphs = []
         self.labels = []
-        graphs, _ = preprocess_save_dataset(log_path, window_size, stride, cache_path)
+        graphs, _ = preprocess_save_dataset(log_path, window_size, stride, cache_path, syscall_dim)
         self.graphs = graphs
         self.labels = [0] * len(graphs)  # all benign
         super(SAVEDataset, self).__init__(name='save')
@@ -98,18 +98,14 @@ class SAVEDataset(dgl.data.DGLDataset):
         return len(self.graphs)
 
 
-def load_save_dataset(log_path, window_size=50, stride=10, cache_path=None):
+def load_save_dataset(log_path, window_size=50, stride=10, cache_path=None, syscall_dim=SYSCALL_DIM):
     """
     Load and preprocess a SAVE-format log file into a batch-level dataset dict
     compatible with batch_level_train.
     """
-    dataset = SAVEDataset(log_path, window_size, stride, cache_path)
+    dataset = SAVEDataset(log_path, window_size, stride, cache_path, syscall_dim)
 
-    node_feature_dim = 0
-    for g, _ in dataset:
-        if g.num_nodes() > 0:
-            node_feature_dim = max(node_feature_dim, g.ndata['type'].max().item())
-    node_feature_dim += 1  # +1 because syscall ids start at 0
+    node_feature_dim = syscall_dim  # 고정 차원 — 학습/평가 간 일관성 보장
 
     edge_feature_dim = 1   # single edge type (transition)
 

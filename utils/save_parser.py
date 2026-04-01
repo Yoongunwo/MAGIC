@@ -5,6 +5,10 @@ import dgl
 from collections import defaultdict
 from tqdm import tqdm
 
+# Linux x86-64 syscall 번호 상한 (커널 6.8 기준 최대 355번 → dim=356).
+# 학습/평가 데이터에 관계없이 동일한 입력 차원을 보장한다.
+SYSCALL_DIM = 356
+
 
 def parse_log_file(filepath):
     """
@@ -92,7 +96,7 @@ def build_graphs_sliding_window(pid_sequences, window_size=50, stride=10):
     return graphs
 
 
-def preprocess_save_dataset(filepath, window_size=50, stride=10, cache_path=None):
+def preprocess_save_dataset(filepath, window_size=50, stride=10, cache_path=None, syscall_dim=SYSCALL_DIM):
     """
     Full preprocessing pipeline for a SAVE-format log file.
     If cache_path is given and exists, loads cached graphs directly.
@@ -114,11 +118,8 @@ def preprocess_save_dataset(filepath, window_size=50, stride=10, cache_path=None
     graphs = build_graphs_sliding_window(pid_sequences, window_size, stride)
     print(f"  Total graphs    : {len(graphs)}")
 
-    # Compute global max syscall number for one-hot feature dim
-    max_syscall = 0
-    for g in graphs:
-        if g.num_nodes() > 0:
-            max_syscall = max(max_syscall, g.ndata['type'].max().item())
+    # 고정 차원 사용 — 데이터에 따라 달라지지 않도록 syscall_dim으로 고정
+    max_syscall = syscall_dim - 1
 
     data = {'graphs': graphs, 'max_syscall': max_syscall}
 
