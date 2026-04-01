@@ -1,0 +1,232 @@
+"""
+Evaluation script for the SAVE syscall log dataset.
+
+두 가지 모드:
+1. 공격 로그 없음 (benign-only):
+   - back_3.10-slim-bullseye.txt를 train/test로 분할
+   - KNN 이상 점수 분포만 출력 (AUC 계산 불가)
+
+2. 공격 로그 지정 (--attack_paths):
+   - benign train으로 KNN 피팅 → benign test + attack test로 AUC/F1/Precision/Recall 산출
+
+Usage:
+    # benign-only mode
+    python eval_save.py
+
+    # 공격 로그 포함 평가
+    python eval_save.py --attack_paths data/SAVE/attack1.txt data/SAVE/attack2.txt
+
+    # 파라미터 조정
+    python eval_save.py --train_ratio 0.8 --repeat 10 --attack_paths data/SAVE/attack.txt
+"""
+
+import os
+import random
+import argparse
+import warnings
+import pickle as pkl
+
+import torch
+import numpy as np
+from sklearn.metrics import roc_auc_score, precision_recall_curve
+from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
+
+from utils.loaddata import load_save_dataset, transform_graph
+from utils.save_parser import preprocess_save_dataset
+from model.autoencoder import build_model
+from utils.poolers import Pooling
+from utils.utils import set_random_seed
+
+warnings.filterwarnings('ignore')
+
+BENIGN_LOG = './data/SAVE/back_3.10-slim-bullseye.txt'
+BENIGN_CACHE = './data/SAVE/cache_back_3.10-slim-bullseye.pkl'
+CHECKPOINT = './checkpoints/checkpoint-save.pt'
+
+
+def build_args():
+    parser = argparse.ArgumentParser(description='MAGIC - SAVE Evaluation')
+    parser.add_argument('--benign_path', type=str, default=BENIGN_LOG)
+    parser.add_argument('--benign_cache', type=str, default=BENIGN_CACHE)
+    parser.add_argument('--attack_paths', type=str, nargs='*', default=[],
+                        help='Paths to attack log files (label=1). Optional.')
+    parser.add_argument('--checkpoint', type=str, default=CHECKPOINT)
+    parser.add_argument('--train_ratio', type=float, default=0.8,
+                        help='Fraction of benign graphs used as train split')
+    parser.add_argument('--window_size', type=int, default=50)
+    parser.add_argument('--stride', type=int, default=10)
+    parser.add_argument('--n_neighbors', type=int, default=10)
+    parser.add_argument('--repeat', type=int, default=10,
+                        help='Repetitions for AUC averaging (only used with attack logs)')
+    parser.add_argument('--device', type=int, default=-1)
+    parser.add_argument('--pooling', type=str, default='mean')
+    parser.add_argument('--num_hidden', type=int, default=64)
+    parser.add_argument('--num_layers', type=int, default=3)
+    parser.add_argument('--negative_slope', type=float, default=0.2)
+    parser.add_argument('--mask_rate', type=float, default=0.5)
+    parser.add_argument('--alpha_l', type=float, default=3)
+    return parser.parse_args()
+
+
+@torch.no_grad()
+def embed_graphs(model, graphs, indices, n_dim, e_dim, device, pooler):
+    """Return (N, D) embedding matrix for the given graph indices."""
+    model.eval()
+    embeddings = []
+    for idx in tqdm(indices, desc='Embedding'):
+        g = transform_graph(graphs[idx][0], n_dim, e_dim).to(device)
+        out = model.embed(g)
+        out = pooler(g, out).cpu().numpy()
+        embeddings.append(out)
+    return np.concatenate(embeddings, axis=0)
+
+
+@torch.no_grad()
+def embed_raw_graphs(model, raw_graphs, n_dim, e_dim, device, pooler):
+    """Embed a plain list of DGL graphs (no label wrapper)."""
+    model.eval()
+    embeddings = []
+    for g in tqdm(raw_graphs, desc='Embedding attack graphs'):
+        from utils.loaddata import transform_graph as tg
+        g = tg(g, n_dim, e_dim).to(device)
+        out = model.embed(g)
+        out = pooler(g, out).cpu().numpy()
+        embeddings.append(out)
+    return np.concatenate(embeddings, axis=0)
+
+
+def knn_anomaly_score(x_train, x_query, n_neighbors):
+    """Fit KNN on x_train, return per-sample anomaly scores for x_query."""
+    x_mean = x_train.mean(axis=0)
+    x_std = x_train.std(axis=0) + 1e-6
+    x_train_norm = (x_train - x_mean) / x_std
+    x_query_norm = (x_query - x_mean) / x_std
+
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors)
+    nbrs.fit(x_train_norm)
+
+    # Baseline: average NN distance within training set (leave-one-out approximation)
+    ref_dists, _ = nbrs.kneighbors(x_train_norm)
+    mean_dist = ref_dists.mean() * n_neighbors / max(n_neighbors - 1, 1)
+
+    query_dists, _ = nbrs.kneighbors(x_query_norm)
+    scores = query_dists.mean(axis=1) / (mean_dist + 1e-9)
+    return scores
+
+
+def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
+    x_test = np.concatenate([x_benign_test, x_attack], axis=0)
+    y_test = np.concatenate([
+        np.zeros(len(x_benign_test)),
+        np.ones(len(x_attack))
+    ])
+
+    benign_idx = np.where(y_test == 0)[0]
+    attack_idx = np.where(y_test == 1)[0]
+
+    auc_list, f1_list, prec_list, rec_list = [], [], [], []
+
+    for s in range(repeat):
+        set_random_seed(s)
+        np.random.shuffle(benign_idx)
+
+        x_mean = x_train.mean(axis=0)
+        x_std = x_train.std(axis=0) + 1e-6
+        x_tr = (x_train - x_mean) / x_std
+        x_te = (x_test - x_mean) / x_std
+
+        nbrs = NearestNeighbors(n_neighbors=n_neighbors)
+        nbrs.fit(x_tr)
+
+        ref_dists, _ = nbrs.kneighbors(x_tr)
+        mean_dist = ref_dists.mean() * n_neighbors / max(n_neighbors - 1, 1)
+        query_dists, _ = nbrs.kneighbors(x_te)
+        scores = query_dists.mean(axis=1) / (mean_dist + 1e-9)
+
+        auc = roc_auc_score(y_test, scores)
+        prec, rec, thresholds = precision_recall_curve(y_test, scores)
+        f1 = 2 * prec * rec / (prec + rec + 1e-9)
+        best = np.argmax(f1)
+
+        auc_list.append(auc)
+        f1_list.append(f1[best])
+        prec_list.append(prec[best])
+        rec_list.append(rec[best])
+
+    print(f'AUC       : {np.mean(auc_list):.4f} ± {np.std(auc_list):.4f}')
+    print(f'F1        : {np.mean(f1_list):.4f} ± {np.std(f1_list):.4f}')
+    print(f'Precision : {np.mean(prec_list):.4f} ± {np.std(prec_list):.4f}')
+    print(f'Recall    : {np.mean(rec_list):.4f} ± {np.std(rec_list):.4f}')
+    return np.mean(auc_list), np.std(auc_list)
+
+
+def evaluate_benign_only(scores):
+    print('--- Anomaly Score Distribution (benign test) ---')
+    print(f'  mean  : {scores.mean():.4f}')
+    print(f'  std   : {scores.std():.4f}')
+    print(f'  min   : {scores.min():.4f}')
+    print(f'  median: {np.median(scores):.4f}')
+    print(f'  95th  : {np.percentile(scores, 95):.4f}')
+    print(f'  max   : {scores.max():.4f}')
+
+
+def main():
+    args = build_args()
+    device = args.device if args.device >= 0 else 'cpu'
+    set_random_seed(0)
+
+    # ── Load benign dataset ────────────────────────────────────────────────
+    benign_data = load_save_dataset(
+        log_path=args.benign_path,
+        window_size=args.window_size,
+        stride=args.stride,
+        cache_path=args.benign_cache,
+    )
+    graphs = benign_data['dataset']
+    n_dim = benign_data['n_feat']
+    e_dim = benign_data['e_feat']
+    all_idx = list(range(len(graphs)))
+    random.shuffle(all_idx)
+
+    split = int(len(all_idx) * args.train_ratio)
+    train_idx = all_idx[:split]
+    test_benign_idx = all_idx[split:]
+    print(f'Benign train: {len(train_idx)}  |  Benign test: {len(test_benign_idx)}')
+
+    # ── Load model ─────────────────────────────────────────────────────────
+    args.n_dim = n_dim
+    args.e_dim = e_dim
+    model = build_model(args)
+    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
+    model = model.to(device)
+    pooler = Pooling(args.pooling)
+
+    # ── Embed benign splits ────────────────────────────────────────────────
+    x_train = embed_graphs(model, graphs, train_idx, n_dim, e_dim, device, pooler)
+    x_benign_test = embed_graphs(model, graphs, test_benign_idx, n_dim, e_dim, device, pooler)
+
+    # ── Load & embed attack graphs (optional) ──────────────────────────────
+    if args.attack_paths:
+        attack_raw_graphs = []
+        for path in args.attack_paths:
+            cache = path.replace('.txt', '_cache.pkl')
+            ag, max_sc = preprocess_save_dataset(path, args.window_size, args.stride, cache)
+            # Expand feature dim if attack logs contain unseen syscall numbers
+            if max_sc + 1 > n_dim:
+                print(f'  Warning: attack log has syscall {max_sc} > train max {n_dim - 1}. '
+                      f'Feature dim kept at {n_dim} (unseen syscalls will be clipped).')
+            attack_raw_graphs.extend(ag)
+        print(f'Attack graphs: {len(attack_raw_graphs)}')
+        x_attack = embed_raw_graphs(model, attack_raw_graphs, n_dim, e_dim, device, pooler)
+
+        print('\n=== Evaluation (with attack labels) ===')
+        evaluate_with_labels(x_train, x_benign_test, x_attack, args.n_neighbors, args.repeat)
+    else:
+        print('\n=== Evaluation (benign-only, no attack labels) ===')
+        scores = knn_anomaly_score(x_train, x_benign_test, args.n_neighbors)
+        evaluate_benign_only(scores)
+
+
+if __name__ == '__main__':
+    main()
