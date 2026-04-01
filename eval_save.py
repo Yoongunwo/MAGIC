@@ -8,16 +8,23 @@ Evaluation script for the SAVE syscall log dataset.
 
 2. 공격 로그 지정 (--attack_paths):
    - benign train으로 KNN 피팅 → benign test + attack test로 AUC/F1/Precision/Recall 산출
+   - 파일 개별 지정 또는 폴더 지정 모두 가능 (폴더 지정 시 .txt 파일 전부 사용)
 
 Usage:
     # benign-only mode
     python eval_save.py
 
-    # 공격 로그 포함 평가
+    # 공격 로그 파일 직접 지정
     python eval_save.py --attack_paths data/SAVE/attack1.txt data/SAVE/attack2.txt
 
+    # 공격 로그가 들어있는 폴더 지정
+    python eval_save.py --attack_paths data/SAVE/attacks/
+
+    # 파일 + 폴더 혼합도 가능
+    python eval_save.py --attack_paths data/SAVE/attacks/ data/SAVE/extra_attack.txt
+
     # 파라미터 조정
-    python eval_save.py --train_ratio 0.8 --repeat 10 --attack_paths data/SAVE/attack.txt
+    python eval_save.py --train_ratio 0.8 --repeat 10 --attack_paths data/SAVE/attacks/
 """
 
 import os
@@ -50,7 +57,7 @@ def build_args():
     parser.add_argument('--benign_path', type=str, default=BENIGN_LOG)
     parser.add_argument('--benign_cache', type=str, default=BENIGN_CACHE)
     parser.add_argument('--attack_paths', type=str, nargs='*', default=[],
-                        help='Paths to attack log files (label=1). Optional.')
+                        help='Paths to attack log files or directories containing .txt logs (label=1). Optional.')
     parser.add_argument('--checkpoint', type=str, default=CHECKPOINT)
     parser.add_argument('--train_ratio', type=float, default=0.8,
                         help='Fraction of benign graphs used as train split')
@@ -208,8 +215,27 @@ def main():
 
     # ── Load & embed attack graphs (optional) ──────────────────────────────
     if args.attack_paths:
-        attack_raw_graphs = []
+        # Expand folders to individual .txt files
+        resolved_attack_files = []
         for path in args.attack_paths:
+            if os.path.isdir(path):
+                txt_files = sorted(
+                    os.path.join(path, f)
+                    for f in os.listdir(path)
+                    if f.endswith('.txt')
+                )
+                if not txt_files:
+                    print(f'  Warning: no .txt files found in directory {path}')
+                else:
+                    print(f'  Found {len(txt_files)} attack log(s) in {path}:')
+                    for f in txt_files:
+                        print(f'    {f}')
+                resolved_attack_files.extend(txt_files)
+            else:
+                resolved_attack_files.append(path)
+
+        attack_raw_graphs = []
+        for path in resolved_attack_files:
             cache = path.replace('.txt', '_cache.pkl')
             ag, max_sc = preprocess_save_dataset(path, args.window_size, args.stride, cache)
             # Expand feature dim if attack logs contain unseen syscall numbers
