@@ -106,7 +106,13 @@ def preprocess_save_dataset(filepath, window_size=50, stride=10, cache_path=None
         print(f"Loading cached dataset from {cache_path}")
         with open(cache_path, 'rb') as f:
             data = pkl.load(f)
-        return data['graphs'], data['max_syscall']
+        cached_max = data['max_syscall']
+        if cached_max >= syscall_dim:
+            raise ValueError(
+                f"Cache {cache_path} has max_syscall={cached_max} but syscall_dim={syscall_dim}. "
+                f"Delete the cache and re-run with --syscall_dim {cached_max + 1}."
+            )
+        return data['graphs'], cached_max
 
     print(f"Parsing {filepath} ...")
     records = parse_log_file(filepath)
@@ -118,8 +124,19 @@ def preprocess_save_dataset(filepath, window_size=50, stride=10, cache_path=None
     graphs = build_graphs_sliding_window(pid_sequences, window_size, stride)
     print(f"  Total graphs    : {len(graphs)}")
 
-    # 고정 차원 사용 — 데이터에 따라 달라지지 않도록 syscall_dim으로 고정
-    max_syscall = syscall_dim - 1
+    # 실제 데이터의 max syscall 확인 및 검증
+    actual_max = 0
+    for g in graphs:
+        if g.num_nodes() > 0:
+            actual_max = max(actual_max, g.ndata['type'].max().item())
+    print(f"  Max syscall     : {actual_max}  (syscall_dim={syscall_dim})")
+    if actual_max >= syscall_dim:
+        raise ValueError(
+            f"Data contains syscall {actual_max} but syscall_dim={syscall_dim}. "
+            f"Re-run with --syscall_dim {actual_max + 1} (and delete the cache first)."
+        )
+
+    max_syscall = actual_max  # 실제 최댓값 저장
 
     data = {'graphs': graphs, 'max_syscall': max_syscall}
 

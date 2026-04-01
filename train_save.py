@@ -32,6 +32,7 @@ def build_args():
     # Data
     parser.add_argument('--log_path', type=str, default=LOG_PATH)
     parser.add_argument('--cache_path', type=str, default=CACHE_PATH)
+    parser.add_argument('--checkpoint_path', type=str, default=CHECKPOINT_PATH)
     parser.add_argument('--window_size', type=int, default=50,
                         help='Sliding window size for syscall sequences')
     parser.add_argument('--stride', type=int, default=10,
@@ -98,8 +99,8 @@ def main():
 
     # ── Save checkpoint ────────────────────────────────────────────────────
     os.makedirs('./checkpoints', exist_ok=True)
-    torch.save(model.state_dict(), CHECKPOINT_PATH)
-    print(f'Checkpoint saved to {CHECKPOINT_PATH}')
+    torch.save(model.state_dict(), args.checkpoint_path)
+    print(f'Checkpoint saved to {args.checkpoint_path}')
 
 
 if __name__ == '__main__':

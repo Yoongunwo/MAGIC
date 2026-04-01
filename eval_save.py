@@ -34,6 +34,7 @@ import warnings
 import pickle as pkl
 
 import torch
+import dgl
 import numpy as np
 from sklearn.metrics import roc_auc_score, precision_recall_curve
 from sklearn.neighbors import NearestNeighbors
@@ -66,7 +67,7 @@ def build_args():
     parser.add_argument('--n_neighbors', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=10,
                         help='Repetitions for AUC averaging (only used with attack logs)')
-    parser.add_argument('--syscall_dim', type=int, default=356,
+    parser.add_argument('--syscall_dim', type=int, default=449,
                         help='One-hot feature dimension = max syscall number + 1 (kernel 6.8: 356)')
     parser.add_argument('--device', type=int, default=-1)
     parser.add_argument('--pooling', type=str, default='mean')
@@ -79,30 +80,50 @@ def build_args():
 
 
 @torch.no_grad()
-def embed_graphs(model, graphs, indices, n_dim, e_dim, device, pooler):
+def _embed_batch(model, batch_gs, device, pooler):
+    """Embed a list of already-transformed DGL graphs as one batch."""
+    bg = dgl.batch(batch_gs).to(device)
+    out = model.embed(bg)
+    # unbatch: 각 그래프별로 pooling
+    gs = dgl.unbatch(bg)
+    offset = 0
+    result = []
+    for g in gs:
+        n = g.num_nodes()
+        result.append(pooler(g, out[offset:offset + n]).cpu().numpy())
+        offset += n
+    return result
+
+
+@torch.no_grad()
+def embed_graphs(model, graphs, indices, n_dim, e_dim, device, pooler, batch_size=256):
     """Return (N, D) embedding matrix for the given graph indices."""
     model.eval()
     embeddings = []
+    batch_gs = []
     for idx in tqdm(indices, desc='Embedding'):
-        g = transform_graph(graphs[idx][0], n_dim, e_dim).to(device)
-        out = model.embed(g)
-        out = pooler(g, out).cpu().numpy()
-        embeddings.append(out)
+        batch_gs.append(transform_graph(graphs[idx][0], n_dim, e_dim))
+        if len(batch_gs) == batch_size:
+            embeddings.extend(_embed_batch(model, batch_gs, device, pooler))
+            batch_gs = []
+    if batch_gs:
+        embeddings.extend(_embed_batch(model, batch_gs, device, pooler))
     return np.concatenate(embeddings, axis=0)
 
 
 @torch.no_grad()
-def embed_raw_graphs(model, raw_graphs, n_dim, e_dim, device, pooler):
+def embed_raw_graphs(model, raw_graphs, n_dim, e_dim, device, pooler, batch_size=256):
     """Embed a plain list of DGL graphs (no label wrapper)."""
     model.eval()
     embeddings = []
+    batch_gs = []
     for g in tqdm(raw_graphs, desc='Embedding attack graphs'):
-        from utils.loaddata import transform_graph as tg
-        # n_dim == SYSCALL_DIM(512)이므로 실제 Linux syscall은 모두 범위 내
-        g = tg(g, n_dim, e_dim).to(device)
-        out = model.embed(g)
-        out = pooler(g, out).cpu().numpy()
-        embeddings.append(out)
+        batch_gs.append(transform_graph(g, n_dim, e_dim))
+        if len(batch_gs) == batch_size:
+            embeddings.extend(_embed_batch(model, batch_gs, device, pooler))
+            batch_gs = []
+    if batch_gs:
+        embeddings.extend(_embed_batch(model, batch_gs, device, pooler))
     return np.concatenate(embeddings, axis=0)
 
 
