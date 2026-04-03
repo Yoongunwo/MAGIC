@@ -7,7 +7,8 @@ This is official code for the USENIX Security 24 paper:
 execute train or evaluation process after defining the ENV parameter when the cuda and dgl conflict
 
 ```
-export LD_LIBRARY_PATH=/workspace/fourth_research/MAGIC/.venv/lib/python3.8/site-packages/nvidia/cusparse/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/workspace/fourth_research/.magic_venv/lib/python3.8/site-packages/nvidia/cusparse/lib:/workspace/fourth_research/.magic_venv/lib/python3.8/site-packages/torch/lib:$LD_LIBRARY_PATH
+
 ```
 
 **MAGIC: Detecting Advanced Persistent Threats via Masked Graph Representation Learning**

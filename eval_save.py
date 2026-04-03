@@ -57,11 +57,16 @@ def build_args():
     parser = argparse.ArgumentParser(description='MAGIC - SAVE Evaluation')
     parser.add_argument('--benign_path', type=str, default=BENIGN_LOG)
     parser.add_argument('--benign_cache', type=str, default=BENIGN_CACHE)
+    parser.add_argument('--ref_path', type=str, default=None,
+                        help='KNN fitting용 레퍼런스 benign 로그 (지정 시 benign_path는 전체가 test가 됨). '
+                             'Model drift 측정에 사용. 미지정 시 benign_path를 train_ratio로 분할.')
+    parser.add_argument('--ref_cache', type=str, default=None,
+                        help='ref_path의 파싱 캐시 경로')
     parser.add_argument('--attack_paths', type=str, nargs='*', default=[],
                         help='Paths to attack log files or directories containing .txt logs (label=1). Optional.')
     parser.add_argument('--checkpoint', type=str, default=CHECKPOINT)
     parser.add_argument('--train_ratio', type=float, default=0.8,
-                        help='Fraction of benign graphs used as train split')
+                        help='Fraction of benign graphs used as train split (ref_path 미지정 시에만 사용)')
     parser.add_argument('--window_size', type=int, default=50)
     parser.add_argument('--stride', type=int, default=10)
     parser.add_argument('--n_neighbors', type=int, default=10)
@@ -207,7 +212,7 @@ def main():
     device = torch.device(f'cuda:{args.device}' if args.device >= 0 else 'cpu')
     set_random_seed(0)
 
-    # ── Load benign dataset ────────────────────────────────────────────────
+    # ── Load benign (test) dataset ─────────────────────────────────────────
     benign_data = load_save_dataset(
         log_path=args.benign_path,
         window_size=args.window_size,
@@ -218,13 +223,6 @@ def main():
     graphs = benign_data['dataset']
     n_dim = benign_data['n_feat']
     e_dim = benign_data['e_feat']
-    all_idx = list(range(len(graphs)))
-    random.shuffle(all_idx)
-
-    split = int(len(all_idx) * args.train_ratio)
-    train_idx = all_idx[:split]
-    test_benign_idx = all_idx[split:]
-    print(f'Benign train: {len(train_idx)}  |  Benign test: {len(test_benign_idx)}')
 
     # ── Load model ─────────────────────────────────────────────────────────
     args.n_dim = n_dim
@@ -234,9 +232,33 @@ def main():
     model = model.to(device)
     pooler = Pooling(args.pooling)
 
-    # ── Embed benign splits ────────────────────────────────────────────────
-    x_train = embed_graphs(model, graphs, train_idx, n_dim, e_dim, device, pooler)
-    x_benign_test = embed_graphs(model, graphs, test_benign_idx, n_dim, e_dim, device, pooler)
+    # ── KNN fitting 데이터 결정 ────────────────────────────────────────────
+    if args.ref_path:
+        # Model drift 모드: ref_path 전체로 KNN fit, benign_path 전체를 test로
+        ref_data = load_save_dataset(
+            log_path=args.ref_path,
+            window_size=args.window_size,
+            stride=args.stride,
+            cache_path=args.ref_cache,
+            syscall_dim=args.syscall_dim,
+        )
+        ref_graphs = ref_data['dataset']
+        ref_idx = list(range(len(ref_graphs)))
+        test_benign_idx = list(range(len(graphs)))
+        print(f'[Drift mode] KNN ref: {len(ref_idx)} ({args.ref_path})')
+        print(f'[Drift mode] Benign test: {len(test_benign_idx)} ({args.benign_path})')
+        x_train = embed_graphs(model, ref_graphs, ref_idx, n_dim, e_dim, device, pooler)
+        x_benign_test = embed_graphs(model, graphs, test_benign_idx, n_dim, e_dim, device, pooler)
+    else:
+        # 기본 모드: benign_path를 train_ratio로 분할
+        all_idx = list(range(len(graphs)))
+        random.shuffle(all_idx)
+        split = int(len(all_idx) * args.train_ratio)
+        train_idx = all_idx[:split]
+        test_benign_idx = all_idx[split:]
+        print(f'Benign train: {len(train_idx)}  |  Benign test: {len(test_benign_idx)}')
+        x_train = embed_graphs(model, graphs, train_idx, n_dim, e_dim, device, pooler)
+        x_benign_test = embed_graphs(model, graphs, test_benign_idx, n_dim, e_dim, device, pooler)
 
     # ── Load & embed attack graphs (optional) ──────────────────────────────
     if args.attack_paths:
