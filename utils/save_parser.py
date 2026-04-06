@@ -78,18 +78,24 @@ def build_syscall_graph(window):
     return g
 
 
-def build_graphs_sliding_window(pid_sequences, window_size=50, stride=10):
+def build_graphs_sliding_window(pid_sequences, window_size=50, stride=10, dedup=True):
     """
     For each PID's syscall sequence, apply a sliding window and build
     a DGL graph per window.
+    dedup=True이면 동일한 syscall 시퀀스(tuple)는 한 번만 그래프로 만든다.
     Returns list of DGL graphs.
     """
+    seen_windows = set() if dedup else None
     graphs = []
     for pid, syscalls in tqdm(pid_sequences.items(), desc="Building graphs per PID"):
         if len(syscalls) < window_size:
             continue
         for i in range(0, len(syscalls) - window_size + 1, stride):
-            window = syscalls[i:i + window_size]
+            window = tuple(syscalls[i:i + window_size])
+            if dedup:
+                if window in seen_windows:
+                    continue
+                seen_windows.add(window)
             g = build_syscall_graph(window)
             if g is not None:
                 graphs.append(g)

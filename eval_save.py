@@ -151,6 +151,16 @@ def knn_anomaly_score(x_train, x_query, n_neighbors):
     return scores
 
 
+def print_score_dist(label, scores):
+    print(f'--- Anomaly Score Distribution ({label}) ---')
+    print(f'  mean  : {scores.mean():.4f}')
+    print(f'  std   : {scores.std():.4f}')
+    print(f'  min   : {scores.min():.4f}')
+    print(f'  median: {np.median(scores):.4f}')
+    print(f'  95th  : {np.percentile(scores, 95):.4f}')
+    print(f'  max   : {scores.max():.4f}')
+
+
 def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
     x_test = np.concatenate([x_benign_test, x_attack], axis=0)
     y_test = np.concatenate([
@@ -158,33 +168,33 @@ def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
         np.ones(len(x_attack))
     ])
 
-    benign_idx = np.where(y_test == 0)[0]
-    attack_idx = np.where(y_test == 1)[0]
-
     auc_list, f1_list, prec_list, rec_list = [], [], [], []
+
+    # repeat마다 x_train은 고정이므로 normalization도 고정
+    x_mean = x_train.mean(axis=0)
+    x_std = x_train.std(axis=0) + 1e-6
+    x_tr = (x_train - x_mean) / x_std
+    x_te = (x_test - x_mean) / x_std
+
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors)
+    nbrs.fit(x_tr)
+    ref_dists, _ = nbrs.kneighbors(x_tr)
+    mean_dist = ref_dists.mean() * n_neighbors / max(n_neighbors - 1, 1)
+    query_dists, _ = nbrs.kneighbors(x_te)
+    scores = query_dists.mean(axis=1) / (mean_dist + 1e-9)
+
+    # Score 분포 출력
+    benign_scores = scores[:len(x_benign_test)]
+    attack_scores = scores[len(x_benign_test):]
+    print_score_dist('benign test', benign_scores)
+    print_score_dist('attack', attack_scores)
 
     for s in range(repeat):
         set_random_seed(s)
-        np.random.shuffle(benign_idx)
-
-        x_mean = x_train.mean(axis=0)
-        x_std = x_train.std(axis=0) + 1e-6
-        x_tr = (x_train - x_mean) / x_std
-        x_te = (x_test - x_mean) / x_std
-
-        nbrs = NearestNeighbors(n_neighbors=n_neighbors)
-        nbrs.fit(x_tr)
-
-        ref_dists, _ = nbrs.kneighbors(x_tr)
-        mean_dist = ref_dists.mean() * n_neighbors / max(n_neighbors - 1, 1)
-        query_dists, _ = nbrs.kneighbors(x_te)
-        scores = query_dists.mean(axis=1) / (mean_dist + 1e-9)
-
         auc = roc_auc_score(y_test, scores)
         prec, rec, thresholds = precision_recall_curve(y_test, scores)
         f1 = 2 * prec * rec / (prec + rec + 1e-9)
         best = np.argmax(f1)
-
         auc_list.append(auc)
         f1_list.append(f1[best])
         prec_list.append(prec[best])
@@ -198,13 +208,7 @@ def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
 
 
 def evaluate_benign_only(scores):
-    print('--- Anomaly Score Distribution (benign test) ---')
-    print(f'  mean  : {scores.mean():.4f}')
-    print(f'  std   : {scores.std():.4f}')
-    print(f'  min   : {scores.min():.4f}')
-    print(f'  median: {np.median(scores):.4f}')
-    print(f'  95th  : {np.percentile(scores, 95):.4f}')
-    print(f'  max   : {scores.max():.4f}')
+    print_score_dist('benign test', scores)
 
 
 def main():
