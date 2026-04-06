@@ -1,15 +1,35 @@
 """
 2D embedding visualization using t-SNE for model drift motivation figure.
 
-eval_save.py 대신 이 스크립트가 직접 임베딩을 추출하고 t-SNE로 시각화한다.
+이 스크립트가 직접 임베딩을 추출하고 t-SNE로 시각화한다.
 
-Usage:
-    python plot_embedding_2d.py
+━━━ 설정 방법 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SOURCES 블록 (파일 하단) — 시각화할 데이터 목록. 직접 수정 필요.
+    label      : 범례에 표시할 이름
+    path       : 로그 파일 경로 (attack은 폴더 경로)
+    cache      : 파싱 캐시 경로 (없으면 None)
+    kind       : 'benign' 또는 'attack'
 
-설정은 아래 CONFIG 블록만 수정하면 됨.
+━━━ 실행 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  python plot_embedding_2d.py [options]
+
+  --checkpoint   학습된 모델 경로            (기본: ./checkpoints/checkpoint-save.pt)
+  --out_dir      figure 저장 디렉토리        (기본: ./figs)
+  --device       GPU id, -1이면 CPU          (기본: -1)
+  --syscall_dim  one-hot 차원                (기본: 449)
+  --max_samples  소스별 최대 샘플 수          (기본: 2000, None=전체)
+  --perplexity   t-SNE perplexity            (기본: 50)
+  --n_iter       t-SNE 반복 수               (기본: 2000)
+  --num_hidden   모델 hidden dim             (기본: 64)
+  --num_layers   모델 레이어 수              (기본: 3)
+
+━━━ 출력 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  {out_dir}/fig_embedding_tsne.pdf
+  {out_dir}/tsne_coords.npy   (재플롯용 좌표 캐시)
 """
 
 import os
+import argparse
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,52 +46,30 @@ from utils.utils import set_random_seed
 
 warnings.filterwarnings('ignore')
 
-# ── 설정 (여기만 수정) ──────────────────────────────────────────────────────
-
-CHECKPOINT   = './checkpoints/online_boutique/v0.3.6/adservice.pt'
-OUT_DIR      = './figs'
-DEVICE       = 'cuda:0'
-SYSCALL_DIM  = 449
-
-# 모델 구조 (train_save.py와 동일하게)
-NUM_HIDDEN     = 64
-NUM_LAYERS     = 3
-NEGATIVE_SLOPE = 0.2
-MASK_RATE      = 0.5
-ALPHA_L        = 3
-POOLING        = 'mean'
-WINDOW_SIZE    = 50
-STRIDE         = 10
-
-# 시각화할 데이터 목록
-# label      : 범례에 표시할 이름
-# path       : 로그 파일 경로
-# cache      : 파싱 캐시 경로
-# kind       : 'benign' or 'attack'
-# max_samples: None이면 전체 사용, 정수면 해당 수만큼 랜덤 샘플링 (t-SNE 속도용)
+# ── SOURCES: 시각화할 데이터 목록 (여기만 수정) ────────────────────────────
 SOURCES = [
     dict(label='v0.3.6 (train)', path='./data/online_boutique/v0.3.6/adservice.txt',
-         cache='./data/online_boutique/v0.3.6/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.3.6/adservice.pkl',  kind='benign'),
     dict(label='v0.4.0',         path='./data/online_boutique/v0.4.0/adservice.txt',
-         cache='./data/online_boutique/v0.4.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.4.0/adservice.pkl',  kind='benign'),
     dict(label='v0.5.0',         path='./data/online_boutique/v0.5.0/adservice.txt',
-         cache='./data/online_boutique/v0.5.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.5.0/adservice.pkl',  kind='benign'),
     dict(label='v0.6.0',         path='./data/online_boutique/v0.6.0/adservice.txt',
-         cache='./data/online_boutique/v0.6.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.6.0/adservice.pkl',  kind='benign'),
     dict(label='v0.7.0',         path='./data/online_boutique/v0.7.0/adservice.txt',
-         cache='./data/online_boutique/v0.7.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.7.0/adservice.pkl',  kind='benign'),
     dict(label='v0.8.0',         path='./data/online_boutique/v0.8.0/adservice.txt',
-         cache='./data/online_boutique/v0.8.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.8.0/adservice.pkl',  kind='benign'),
     dict(label='v0.9.0',         path='./data/online_boutique/v0.9.0/adservice.txt',
-         cache='./data/online_boutique/v0.9.0/adservice.pkl',  kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.9.0/adservice.pkl',  kind='benign'),
     dict(label='v0.10.5',        path='./data/online_boutique/v0.10.5/adservice.txt',
-         cache='./data/online_boutique/v0.10.5/adservice.pkl', kind='benign', max_samples=2000),
+         cache='./data/online_boutique/v0.10.5/adservice.pkl', kind='benign'),
     dict(label='Attack',         path='./data/Attack/',
-         cache=None,                                            kind='attack', max_samples=2000),
+         cache=None,                                            kind='attack'),
 ]
+# ────────────────────────────────────────────────────────────────────────────
 
 # 색상 + 마커: 흑백 인쇄에서도 구분되도록
-# benign 버전은 파란 계열 + 마커 변화, attack은 빨간 X
 _BENIGN_STYLES = [
     dict(color='#08306B', marker='o'),
     dict(color='#2171B5', marker='s'),
@@ -83,13 +81,6 @@ _BENIGN_STYLES = [
     dict(color='#888888', marker='X'),
 ]
 _ATTACK_STYLE = dict(color='#CB181D', marker='x')
-
-# t-SNE 파라미터
-TSNE_PERPLEXITY  = 50
-TSNE_N_ITER      = 2000
-TSNE_RANDOM_STATE = 42
-
-# ────────────────────────────────────────────────────────────────────────────
 
 
 class _Args:
