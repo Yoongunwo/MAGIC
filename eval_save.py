@@ -81,6 +81,8 @@ def build_args():
     parser.add_argument('--negative_slope', type=float, default=0.2)
     parser.add_argument('--mask_rate', type=float, default=0.5)
     parser.add_argument('--alpha_l', type=float, default=3)
+    parser.add_argument('--save_scores', type=str, default=None,
+                        help='score 배열을 저장할 디렉토리 경로. 지정 시 benign/attack score를 .npy로 저장.')
     return parser.parse_args()
 
 
@@ -170,7 +172,6 @@ def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
 
     auc_list, f1_list, prec_list, rec_list = [], [], [], []
 
-    # repeat마다 x_train은 고정이므로 normalization도 고정
     x_mean = x_train.mean(axis=0)
     x_std = x_train.std(axis=0) + 1e-6
     x_tr = (x_train - x_mean) / x_std
@@ -183,7 +184,6 @@ def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
     query_dists, _ = nbrs.kneighbors(x_te)
     scores = query_dists.mean(axis=1) / (mean_dist + 1e-9)
 
-    # Score 분포 출력
     benign_scores = scores[:len(x_benign_test)]
     attack_scores = scores[len(x_benign_test):]
     print_score_dist('benign test', benign_scores)
@@ -204,11 +204,29 @@ def evaluate_with_labels(x_train, x_benign_test, x_attack, n_neighbors, repeat):
     print(f'F1        : {np.mean(f1_list):.4f} ± {np.std(f1_list):.4f}')
     print(f'Precision : {np.mean(prec_list):.4f} ± {np.std(prec_list):.4f}')
     print(f'Recall    : {np.mean(rec_list):.4f} ± {np.std(rec_list):.4f}')
-    return np.mean(auc_list), np.std(auc_list)
+    return np.mean(auc_list), np.std(auc_list), benign_scores, attack_scores
 
 
 def evaluate_benign_only(scores):
     print_score_dist('benign test', scores)
+    return scores
+
+
+def _save_scores(save_dir, benign_path, benign_scores, attack_scores):
+    os.makedirs(save_dir, exist_ok=True)
+    # 파일명: benign_path의 마지막 두 디렉토리 + 파일명으로 구성 (버전 구분용)
+    # e.g. ./data/online_boutique/v0.9.0/adservice.txt → v0.9.0_adservice
+    parts = benign_path.replace('\\', '/').rstrip('/').split('/')
+    stem = '_'.join(parts[-2:]).replace('.txt', '')
+
+    benign_out = os.path.join(save_dir, f'{stem}_benign.npy')
+    np.save(benign_out, benign_scores)
+    print(f'Saved benign scores → {benign_out}')
+
+    if attack_scores is not None:
+        attack_out = os.path.join(save_dir, f'{stem}_attack.npy')
+        np.save(attack_out, attack_scores)
+        print(f'Saved attack scores → {attack_out}')
 
 
 def main():
@@ -298,11 +316,16 @@ def main():
         x_attack = embed_raw_graphs(model, attack_raw_graphs, n_dim, e_dim, device, pooler)
 
         print('\n=== Evaluation (with attack labels) ===')
-        evaluate_with_labels(x_train, x_benign_test, x_attack, args.n_neighbors, args.repeat)
+        _, _, benign_scores, attack_scores = evaluate_with_labels(
+            x_train, x_benign_test, x_attack, args.n_neighbors, args.repeat)
+        if args.save_scores:
+            _save_scores(args.save_scores, args.benign_path, benign_scores, attack_scores)
     else:
         print('\n=== Evaluation (benign-only, no attack labels) ===')
         scores = knn_anomaly_score(x_train, x_benign_test, args.n_neighbors)
         evaluate_benign_only(scores)
+        if args.save_scores:
+            _save_scores(args.save_scores, args.benign_path, scores, None)
 
 
 if __name__ == '__main__':
