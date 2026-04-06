@@ -46,6 +46,28 @@ from utils.utils import set_random_seed
 
 warnings.filterwarnings('ignore')
 
+
+def build_args():
+    parser = argparse.ArgumentParser(description='MAGIC - 2D Embedding Visualization (t-SNE)')
+    parser.add_argument('--checkpoint',  type=str,   default='./checkpoints/checkpoint-save.pt')
+    parser.add_argument('--out_dir',     type=str,   default='./figs')
+    parser.add_argument('--device',      type=int,   default=-1,
+                        help='GPU id, -1 for CPU')
+    parser.add_argument('--syscall_dim', type=int,   default=449)
+    parser.add_argument('--max_samples', type=int,   default=2000,
+                        help='Max samples per source (0 = all)')
+    parser.add_argument('--perplexity',  type=float, default=50)
+    parser.add_argument('--n_iter',      type=int,   default=2000)
+    parser.add_argument('--num_hidden',  type=int,   default=64)
+    parser.add_argument('--num_layers',  type=int,   default=3)
+    parser.add_argument('--window_size', type=int,   default=50)
+    parser.add_argument('--stride',      type=int,   default=10)
+    parser.add_argument('--pooling',     type=str,   default='mean')
+    parser.add_argument('--negative_slope', type=float, default=0.2)
+    parser.add_argument('--mask_rate',   type=float, default=0.5)
+    parser.add_argument('--alpha_l',     type=float, default=3)
+    return parser.parse_args()
+
 # ── SOURCES: 시각화할 데이터 목록 (여기만 수정) ────────────────────────────
 SOURCES = [
     dict(label='v0.3.6 (train)', path='./data/online_boutique/v0.3.6/adservice.txt',
@@ -85,12 +107,12 @@ _ATTACK_STYLE = dict(color='#CB181D', marker='x')
 
 class _Args:
     """build_model이 요구하는 args 객체."""
-    def __init__(self, n_dim, e_dim):
-        self.num_hidden     = NUM_HIDDEN
-        self.num_layers     = NUM_LAYERS
-        self.negative_slope = NEGATIVE_SLOPE
-        self.mask_rate      = MASK_RATE
-        self.alpha_l        = ALPHA_L
+    def __init__(self, cli_args, n_dim, e_dim):
+        self.num_hidden     = cli_args.num_hidden
+        self.num_layers     = cli_args.num_layers
+        self.negative_slope = cli_args.negative_slope
+        self.mask_rate      = cli_args.mask_rate
+        self.alpha_l        = cli_args.alpha_l
         self.n_dim          = n_dim
         self.e_dim          = e_dim
 
@@ -144,9 +166,10 @@ def extract_embeddings(model, graphs_or_raw, n_dim, e_dim, device, pooler,
     return np.concatenate(embeddings, axis=0)
 
 
-def load_source(src, n_dim, e_dim, device, model, pooler):
+def load_source(src, n_dim, e_dim, device, model, pooler, args):
     """SOURCES 항목 하나를 로드해 임베딩 반환."""
     kind = src['kind']
+    max_samples = args.max_samples if args.max_samples > 0 else None
 
     if kind == 'attack':
         # 폴더 내 .txt 전부
@@ -158,27 +181,27 @@ def load_source(src, n_dim, e_dim, device, model, pooler):
                 continue
             fpath = os.path.join(folder, fname)
             cache = fpath.replace('.txt', '_cache.pkl')
-            graphs, _ = preprocess_save_dataset(fpath, WINDOW_SIZE, STRIDE, cache, SYSCALL_DIM)
+            graphs, _ = preprocess_save_dataset(fpath, args.window_size, args.stride, cache, args.syscall_dim)
             all_graphs.extend(graphs)
         emb = extract_embeddings(model, all_graphs, n_dim, e_dim, device, pooler,
-                                 is_raw=True, max_samples=src['max_samples'])
+                                 is_raw=True, max_samples=max_samples)
     else:
-        data = load_save_dataset(src['path'], WINDOW_SIZE, STRIDE,
-                                 src['cache'], SYSCALL_DIM)
+        data = load_save_dataset(src['path'], args.window_size, args.stride,
+                                 src['cache'], args.syscall_dim)
         graphs = data['dataset']
         items = [graphs[i] for i in range(len(graphs))]
         emb = extract_embeddings(model, items, n_dim, e_dim, device, pooler,
-                                 is_raw=False, max_samples=src['max_samples'])
+                                 is_raw=False, max_samples=max_samples)
     return emb
 
 
-def run_tsne(embeddings_list):
+def run_tsne(embeddings_list, args):
     """모든 임베딩을 합쳐 t-SNE 실행 후 분리 반환."""
     sizes = [len(e) for e in embeddings_list]
     X = np.concatenate(embeddings_list, axis=0)
-    print(f'\nRunning t-SNE on {len(X)} samples (perplexity={TSNE_PERPLEXITY}, n_iter={TSNE_N_ITER}) ...')
-    tsne = TSNE(n_components=2, perplexity=TSNE_PERPLEXITY, n_iter=TSNE_N_ITER,
-                random_state=TSNE_RANDOM_STATE, verbose=1)
+    print(f'\nRunning t-SNE on {len(X)} samples (perplexity={args.perplexity}, n_iter={args.n_iter}) ...')
+    tsne = TSNE(n_components=2, perplexity=args.perplexity, n_iter=args.n_iter,
+                random_state=42, verbose=1)
     X2d = tsne.fit_transform(X)
 
     result = []
@@ -231,37 +254,38 @@ def plot_2d(coords_list, sources, styles, save_path, alpha_benign=0.4, alpha_att
 
 
 def main():
+    args = build_args()
     set_random_seed(42)
-    device = torch.device(DEVICE if torch.cuda.is_available() else 'cpu')
+    device = torch.device(f'cuda:{args.device}' if args.device >= 0 and torch.cuda.is_available() else 'cpu')
 
     # 모델 로드 (n_dim/e_dim은 첫 번째 benign 소스에서 결정)
     first_benign = next(s for s in SOURCES if s['kind'] == 'benign')
-    data = load_save_dataset(first_benign['path'], WINDOW_SIZE, STRIDE,
-                             first_benign['cache'], SYSCALL_DIM)
+    data = load_save_dataset(first_benign['path'], args.window_size, args.stride,
+                             first_benign['cache'], args.syscall_dim)
     n_dim, e_dim = data['n_feat'], data['e_feat']
 
-    args = _Args(n_dim, e_dim)
-    model = build_model(args)
-    model.load_state_dict(torch.load(CHECKPOINT, map_location=device))
+    model_args = _Args(args, n_dim, e_dim)
+    model = build_model(model_args)
+    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model = model.to(device)
-    pooler = Pooling(POOLING)
-    print(f'Model loaded: {CHECKPOINT}')
+    pooler = Pooling(args.pooling)
+    print(f'Model loaded: {args.checkpoint}')
 
     # 각 소스 임베딩 추출
     embeddings_list = []
     for src in SOURCES:
         print(f"\n[{src['label']}] {src['path']}")
-        emb = load_source(src, n_dim, e_dim, device, model, pooler)
+        emb = load_source(src, n_dim, e_dim, device, model, pooler, args)
         embeddings_list.append(emb)
         print(f"  → {emb.shape}")
 
     # t-SNE
-    coords_list = run_tsne(embeddings_list)
+    coords_list = run_tsne(embeddings_list, args)
 
     # 저장
-    os.makedirs(OUT_DIR, exist_ok=True)
-    npy_path = os.path.join(OUT_DIR, 'tsne_coords.npy')
-    labels_path = os.path.join(OUT_DIR, 'tsne_labels.npy')
+    os.makedirs(args.out_dir, exist_ok=True)
+    npy_path = os.path.join(args.out_dir, 'tsne_coords.npy')
+    labels_path = os.path.join(args.out_dir, 'tsne_labels.npy')
     np.save(npy_path, np.concatenate(coords_list, axis=0))
     sizes = [len(c) for c in coords_list]
     np.save(labels_path, np.array(sizes))
@@ -270,7 +294,7 @@ def main():
     # 시각화
     styles = assign_styles(SOURCES)
     plot_2d(coords_list, SOURCES, styles,
-            os.path.join(OUT_DIR, 'fig_embedding_tsne.pdf'))
+            os.path.join(args.out_dir, 'fig_embedding_tsne.pdf'))
 
 
 if __name__ == '__main__':
