@@ -231,10 +231,12 @@ def plot_2d(coords_list, sources, styles, save_path, alpha_benign=0.4, alpha_att
     handles = []
     for coords, src, style in zip(coords_list, sources, styles):
         alpha = alpha_attack if src['kind'] == 'attack' else alpha_benign
-        sc = ax.scatter(coords[:, 0], coords[:, 1],
-                        c=style['color'], marker=style['marker'],
-                        s=point_size, alpha=alpha, linewidths=0,
-                        label=src['label'])
+        is_line_marker = style['marker'] in ('x', '+', '|', '_')
+        lw = 0.8 if is_line_marker else 0
+        ax.scatter(coords[:, 0], coords[:, 1],
+                   c=style['color'], marker=style['marker'],
+                   s=point_size, alpha=alpha, linewidths=lw,
+                   label=src['label'])
         handles.append(mpatches.Patch(color=style['color'], label=src['label']))
 
     ax.legend(handles=handles, fontsize=8, loc='best',
@@ -250,6 +252,9 @@ def plot_2d(coords_list, sources, styles, save_path, alpha_benign=0.4, alpha_att
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f'Saved: {save_path}')
+    png_path = save_path.replace('.pdf', '.png')
+    plt.savefig(png_path, dpi=300, bbox_inches='tight')
+    print(f'Saved: {png_path}')
     plt.close()
 
 
