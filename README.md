@@ -1,8 +1,4 @@
-# MAGIC
-
-This is official code for the USENIX Security 24 paper:
-
-## For Me
+# For Me
 
 execute train or evaluation process after defining the ENV parameter when the cuda and dgl conflict
 
@@ -10,6 +6,10 @@ execute train or evaluation process after defining the ENV parameter when the cu
 export LD_LIBRARY_PATH=/workspace/fourth_research/.magic_venv/lib/python3.8/site-packages/nvidia/cusparse/lib:/workspace/fourth_research/.magic_venv/lib/python3.8/site-packages/torch/lib:$LD_LIBRARY_PATH
 
 ```
+
+# MAGIC
+
+This is official code for the USENIX Security 24 paper:
 
 **MAGIC: Detecting Advanced Persistent Threats via Masked Graph Representation Learning**
 
