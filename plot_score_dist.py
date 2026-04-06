@@ -17,7 +17,6 @@ Usage:
 """
 
 import os
-import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -158,39 +157,67 @@ def plot_violin(samples, styles, threshold, threshold_label, save_path):
     plt.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Plot anomaly score distributions')
-    parser.add_argument('--scores_dir', type=str, required=True,
-                        help='eval_save.py --save_scores 로 저장한 .npy 파일 디렉토리')
-    parser.add_argument('--attack_label', type=str, default='Attack',
-                        help='attack 항목 레이블 (기본: Attack)')
-    parser.add_argument('--order', type=str, nargs='*', default=None,
-                        help='레이블 표시 순서 (미지정 시 알파벳 순)')
-    parser.add_argument('--threshold', type=float, default=None,
-                        help='threshold 값 (미지정 시 첫 번째 benign의 95th percentile 자동 사용)')
-    parser.add_argument('--threshold_label', type=str, default=None,
-                        help='threshold 설명에 쓸 레이블 (미지정 시 첫 번째 benign 레이블 사용)')
-    parser.add_argument('--out_dir', type=str, default='.',
-                        help='결과 figure 저장 디렉토리 (기본: 현재 디렉토리)')
-    args = parser.parse_args()
+# ── 설정 (여기만 수정) ──────────────────────────────────────────────────────
 
-    print(f'Loading scores from {args.scores_dir} ...')
-    samples = load_scores(args.scores_dir, args.order, args.attack_label)
+SCORES_DIR = './scores/adservice'
+OUT_DIR    = './figs'
+ATTACK_LABEL = 'Attack'
+
+# .npy 파일명(확장자·_benign 제외)과 x축 표시 레이블을 순서대로 매핑
+# 키: {scores_dir} 안의 파일 stem (e.g. "v0.3.6_adservice")
+# 값: x축에 표시할 레이블
+ORDER_AND_LABELS = {
+    'v0.3.6_adservice': 'v0.3.6\n(train)',
+    'v0.4.0_adservice': 'v0.4.0',
+    'v0.5.0_adservice': 'v0.5.0',
+    'v0.6.0_adservice': 'v0.6.0',
+    'v0.7.0_adservice': 'v0.7.0',
+    'v0.8.0_adservice': 'v0.8.0',
+    'v0.9.0_adservice': 'v0.9.0',
+    'v0.10.5_adservice': 'v0.10.5',
+    # attack은 ATTACK_LABEL로 자동 추가됨
+}
+
+# threshold: None이면 첫 번째 benign의 95th percentile 자동 사용
+THRESHOLD = None
+THRESHOLD_LABEL = 'v0.3.6 (train)'
+
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def main():
+    # benign 로드 (ORDER_AND_LABELS 순서대로)
+    samples = {}
+    for stem, xlabel in ORDER_AND_LABELS.items():
+        fpath = os.path.join(SCORES_DIR, f'{stem}_benign.npy')
+        if not os.path.exists(fpath):
+            print(f'  [skip] {fpath} 없음')
+            continue
+        samples[xlabel] = np.load(fpath)
+        print(f'  Loaded [{xlabel}]: {len(samples[xlabel])} samples')
+
+    # attack 로드 (디렉토리 내 *_attack.npy 전부 합치기)
+    attack_files = sorted(
+        f for f in os.listdir(SCORES_DIR) if f.endswith('_attack.npy')
+    )
+    if attack_files:
+        arr = np.concatenate([np.load(os.path.join(SCORES_DIR, f)) for f in attack_files])
+        samples[ATTACK_LABEL] = arr
+        print(f'  Loaded [{ATTACK_LABEL}]: {len(arr)} samples ({len(attack_files)} file(s))')
 
     labels = list(samples.keys())
-    styles = assign_styles(labels, args.attack_label)
+    styles = assign_styles(labels, ATTACK_LABEL)
 
-    # threshold 결정
-    benign_labels = [l for l in labels if l != args.attack_label]
-    threshold_label = args.threshold_label or benign_labels[0]
-    threshold = args.threshold or float(np.percentile(samples[benign_labels[0]], 95))
+    benign_labels = [l for l in labels if l != ATTACK_LABEL]
+    threshold = THRESHOLD if THRESHOLD is not None else float(np.percentile(samples[benign_labels[0]], 95))
+    threshold_label = THRESHOLD_LABEL or benign_labels[0]
     print(f'Threshold: {threshold:.4f} ({threshold_label} 95th)')
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     plot_boxplot(samples, styles, threshold, threshold_label,
-                 os.path.join(args.out_dir, 'fig_score_boxplot.pdf'))
+                 os.path.join(OUT_DIR, 'fig_score_boxplot.pdf'))
     plot_violin(samples, styles, threshold, threshold_label,
-                os.path.join(args.out_dir, 'fig_score_violin.pdf'))
+                os.path.join(OUT_DIR, 'fig_score_violin.pdf'))
 
 
 if __name__ == '__main__':
