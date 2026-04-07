@@ -93,7 +93,7 @@ SOURCES = [
 
 # 색상 + 마커: 흑백 인쇄에서도 구분되도록
 _BENIGN_STYLES = [
-    dict(color='#08306B', marker='o'),
+    dict(color='orange', marker='o'),
     dict(color='#2171B5', marker='s'),
     dict(color='#4292C6', marker='^'),
     dict(color='#6BAED6', marker='D'),
@@ -304,3 +304,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
