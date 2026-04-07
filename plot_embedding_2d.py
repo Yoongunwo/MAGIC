@@ -3,29 +3,32 @@
 
 이 스크립트가 직접 임베딩을 추출하고 t-SNE로 시각화한다.
 
-━━━ 설정 방법 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  SOURCES 블록 (파일 하단) — 시각화할 데이터 목록. 직접 수정 필요.
-    label      : 범례에 표시할 이름
-    path       : 로그 파일 경로 (attack은 폴더 경로)
-    cache      : 파싱 캐시 경로 (없으면 None)
-    kind       : 'benign' 또는 'attack'
-
 ━━━ 실행 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  python plot_embedding_2d.py [options]
+  python plot_embedding_2d.py --service <서비스명> [options]
 
+  --service      서비스 이름 (필수). e.g. cartservice, frontend, adservice
+                 data/online_boutique/{version}/{service}.txt 경로를 자동 생성
   --checkpoint   학습된 모델 경로            (기본: ./checkpoints/checkpoint-save.pt)
-  --out_dir      figure 저장 디렉토리        (기본: ./figs)
+  --attack_dir   공격 로그 폴더              (기본: ./data/Attack)
+  --out_dir      figure 저장 디렉토리        (기본: ./figs/{service})
   --device       GPU id, -1이면 CPU          (기본: -1)
   --syscall_dim  one-hot 차원                (기본: 449)
-  --max_samples  소스별 최대 샘플 수          (기본: 2000, None=전체)
+  --max_samples  소스별 최대 샘플 수 상한     (기본: 2000, 0=전체)
+                 실제 사용되는 수는 전체 소스 중 가장 작은 수에 자동 맞춤
   --perplexity   t-SNE perplexity            (기본: 50)
   --n_iter       t-SNE 반복 수               (기본: 2000)
   --num_hidden   모델 hidden dim             (기본: 64)
   --num_layers   모델 레이어 수              (기본: 3)
 
 ━━━ 출력 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  {out_dir}/fig_embedding_tsne.pdf
+  {out_dir}/fig_embedding_tsne.pdf / .png
   {out_dir}/tsne_coords.npy   (재플롯용 좌표 캐시)
+
+━━━ 예시 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  python plot_embedding_2d.py \\
+      --service cartservice \\
+      --checkpoint ./checkpoints/online_boutique/v0.3.6/cartservice.pt \\
+      --device 0
 """
 
 import os
@@ -47,15 +50,43 @@ from utils.utils import set_random_seed
 warnings.filterwarnings('ignore')
 
 
+_VERSIONS = [
+    ('v0.3.6', 'v0.3.6\n(train)'),
+    ('v0.4.0', 'v0.4.0'),
+    ('v0.5.0', 'v0.5.0'),
+    ('v0.6.0', 'v0.6.0'),
+    ('v0.7.0', 'v0.7.0'),
+    ('v0.8.0', 'v0.8.0'),
+    ('v0.9.0', 'v0.9.0'),
+    ('v0.10.5', 'v0.10.5'),
+]
+
+
+def build_sources(service, attack_dir):
+    base = './data/online_boutique'
+    sources = []
+    for ver, label in _VERSIONS:
+        path = f'{base}/{ver}/{service}.txt'
+        cache = f'{base}/{ver}/{service}.pkl'
+        if os.path.exists(path):
+            sources.append(dict(label=label, path=path, cache=cache, kind='benign'))
+    sources.append(dict(label='Attack', path=attack_dir, cache=None, kind='attack'))
+    return sources
+
+
 def build_args():
     parser = argparse.ArgumentParser(description='MAGIC - 2D Embedding Visualization (t-SNE)')
+    parser.add_argument('--service',     type=str,   required=True,
+                        help='서비스 이름 (e.g. cartservice, frontend)')
     parser.add_argument('--checkpoint',  type=str,   default='./checkpoints/checkpoint-save.pt')
-    parser.add_argument('--out_dir',     type=str,   default='./figs')
+    parser.add_argument('--attack_dir',  type=str,   default='./data/Attack')
+    parser.add_argument('--out_dir',     type=str,   default=None,
+                        help='기본값: ./figs/{service}')
     parser.add_argument('--device',      type=int,   default=-1,
                         help='GPU id, -1 for CPU')
     parser.add_argument('--syscall_dim', type=int,   default=449)
     parser.add_argument('--max_samples', type=int,   default=2000,
-                        help='Max samples per source (0 = all)')
+                        help='소스별 최대 샘플 수 상한 (0=전체). 실제 사용 수는 전체 소스 최솟값에 맞춤.')
     parser.add_argument('--perplexity',  type=float, default=50)
     parser.add_argument('--n_iter',      type=int,   default=2000)
     parser.add_argument('--num_hidden',  type=int,   default=64)
@@ -66,30 +97,10 @@ def build_args():
     parser.add_argument('--negative_slope', type=float, default=0.2)
     parser.add_argument('--mask_rate',   type=float, default=0.5)
     parser.add_argument('--alpha_l',     type=float, default=3)
-    return parser.parse_args()
-
-# ── SOURCES: 시각화할 데이터 목록 (여기만 수정) ────────────────────────────
-SOURCES = [
-    dict(label='v0.3.6 (train)', path='./data/online_boutique/v0.3.6/frontend.txt',
-         cache='./data/online_boutique/v0.3.6/frontend.pkl',  kind='benign'),
-    dict(label='v0.4.0',         path='./data/online_boutique/v0.4.0/frontend.txt',
-         cache='./data/online_boutique/v0.4.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.5.0',         path='./data/online_boutique/v0.5.0/frontend.txt',
-         cache='./data/online_boutique/v0.5.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.6.0',         path='./data/online_boutique/v0.6.0/frontend.txt',
-         cache='./data/online_boutique/v0.6.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.7.0',         path='./data/online_boutique/v0.7.0/frontend.txt',
-         cache='./data/online_boutique/v0.7.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.8.0',         path='./data/online_boutique/v0.8.0/frontend.txt',
-         cache='./data/online_boutique/v0.8.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.9.0',         path='./data/online_boutique/v0.9.0/frontend.txt',
-         cache='./data/online_boutique/v0.9.0/frontend.pkl',  kind='benign'),
-    dict(label='v0.10.5',        path='./data/online_boutique/v0.10.5/frontend.txt',
-         cache='./data/online_boutique/v0.10.5/frontend.pkl', kind='benign'),
-    dict(label='Attack',         path='./data/Attack/',
-         cache=None,                                            kind='attack'),
-]
-# ────────────────────────────────────────────────────────────────────────────
+    args = parser.parse_args()
+    if args.out_dir is None:
+        args.out_dir = f'./figs/{args.service}'
+    return args
 
 # 색상 + 마커: 흑백 인쇄에서도 구분되도록
 _BENIGN_STYLES = [
@@ -263,8 +274,11 @@ def main():
     set_random_seed(42)
     device = torch.device(f'cuda:{args.device}' if args.device >= 0 and torch.cuda.is_available() else 'cpu')
 
+    sources = build_sources(args.service, args.attack_dir)
+    print(f'Service: {args.service}  ({len(sources) - 1} benign versions + attack)')
+
     # 모델 로드 (n_dim/e_dim은 첫 번째 benign 소스에서 결정)
-    first_benign = next(s for s in SOURCES if s['kind'] == 'benign')
+    first_benign = next(s for s in sources if s['kind'] == 'benign')
     data = load_save_dataset(first_benign['path'], args.window_size, args.stride,
                              first_benign['cache'], args.syscall_dim)
     n_dim, e_dim = data['n_feat'], data['e_feat']
@@ -276,13 +290,24 @@ def main():
     pooler = Pooling(args.pooling)
     print(f'Model loaded: {args.checkpoint}')
 
-    # 각 소스 임베딩 추출
+    # 각 소스 임베딩 추출 (max_samples 상한 적용)
     embeddings_list = []
-    for src in SOURCES:
+    for src in sources:
         print(f"\n[{src['label']}] {src['path']}")
         emb = load_source(src, n_dim, e_dim, device, model, pooler, args)
         embeddings_list.append(emb)
         print(f"  → {emb.shape}")
+
+    # 모든 소스 중 가장 작은 수에 맞춰 subsampling
+    min_n = min(len(e) for e in embeddings_list)
+    if args.max_samples > 0:
+        min_n = min(min_n, args.max_samples)
+    print(f'\nBalancing samples → {min_n} per source')
+    rng = np.random.default_rng(42)
+    embeddings_list = [
+        e[rng.choice(len(e), min_n, replace=False)] if len(e) > min_n else e
+        for e in embeddings_list
+    ]
 
     # t-SNE
     coords_list = run_tsne(embeddings_list, args)
@@ -297,8 +322,8 @@ def main():
     print(f'Coords saved: {npy_path}')
 
     # 시각화
-    styles = assign_styles(SOURCES)
-    plot_2d(coords_list, SOURCES, styles,
+    styles = assign_styles(sources)
+    plot_2d(coords_list, sources, styles,
             os.path.join(args.out_dir, 'fig_embedding_tsne.pdf'))
 
 
